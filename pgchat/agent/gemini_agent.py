@@ -6,6 +6,7 @@ from typing import Any
 
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -167,6 +168,24 @@ class GeminiAgent:
                 },
             )
 
+    def _format_api_error(self, e: APIError) -> str:
+        """Build a clean, user-facing message from a Gemini APIError."""
+        if e.code == 429:
+            retry_delay = None
+            try:
+                for detail in e.details["error"]["details"]:
+                    if detail.get("@type", "").endswith("RetryInfo"):
+                        retry_delay = detail.get("retryDelay")
+                        break
+            except (KeyError, TypeError, AttributeError):
+                pass
+
+            if retry_delay:
+                return f"Gemini rate limit reached. Retry in {retry_delay}."
+            return "Gemini rate limit reached. Please wait a moment and try again."
+
+        return f"Gemini API error ({e.code} {e.status}): {e.message}"
+
     def extract_function_call(self, response: Any) -> types.FunctionCall | None:
         """
         Extract function call from Gemini response if present.
@@ -221,6 +240,12 @@ class GeminiAgent:
                     contents=self.history,
                     config=self.config,
                 )
+            except APIError as e:
+                if e.code == 429:
+                    logger.warning(f"Gemini API rate limited: {e.message}")
+                else:
+                    logger.exception("Gemini API call failed")
+                raise RuntimeError(self._format_api_error(e)) from None
             except Exception:
                 logger.exception("Gemini API call failed")
                 raise
